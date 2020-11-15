@@ -1,0 +1,487 @@
+#!/bin/bash
+#Manages docker based jupyterhub projects
+
+##########
+# Params #
+##########
+
+#Specify this machines IP
+hostIP=`cat /projman/hostIP`
+userName=`cat /projman/userName`
+#Location of launcher html
+launchHTML=/var/www/html/index.html
+#Nginx server file
+nginxFile=/etc/nginx/conf.d/server.conf
+#Where to store the provisioning files
+provisionDir=/projman/default
+#Where to copy files for jupyterhub init from
+jupyterInit=${provisionDir}/initJupyter
+#Default base dockerfile
+baseDock=${provisionDir}/Dockerfile
+
+#############
+# Functions #
+#############
+
+#' Start a new container and make the system modifications needed
+#' 
+#' @param 1 The project name
+#' @param 2 The port on which this is to be run
+function startProj {
+  projName=$1
+  portNum=$2
+  #Start a container based on the improted image
+  docker run --name project_$projName \
+    --privileged --detach \
+    --env GRAN_SUDO=yes \
+    --hostname=${projName} \
+    --publish ${portNum}:8888 --user root \
+    --volume /nfs:/nfs \
+    --volume /lustre:/lustre \
+    --volume /warehouse:/warehouse \
+    project_${projName}
+  #Update nginx config
+  sudo sed -i "/NEW_BLOCK_PLACEHOLDER/s/.*/  location \/${userName}\/${projName}\/ {\n\
+    proxy_pass          http:\/\/${hostIP}:${portNum}\/${userName}\/${projName}\/; \n\
+    proxy_set_header    Host \$host; \n\
+    proxy_redirect      off; \n\
+    proxy_http_version  1.1; \n\
+    proxy_set_header    Upgrade \$http_upgrade; # needed for web sockets \n\
+    proxy_set_header    Connection \"upgrade\"; \n\
+  } \n\
+  #NEW_BLOCK_PLACEHOLDER/" ${nginxFile}
+  sudo nginx -s reload
+}
+
+
+#' Adds project description block to html index
+#'
+#' @param 1 The project name.
+function addProjDesc {
+  projName="$1"
+  read -p "Enter brief project description.  No special characters please: " projDesc
+  sudo sed -i "/<\!-- TARGET FOR PROJECT INSERTION-->/s/.*/                <\!-- TARGET FOR PROJECT INSERTION-->\n\
+                <div class='col-md-4 ${projName}'>\n\
+                    <h2>${projName}<\/h2>\n\
+                    <p><emph>Description:<\/emph> ${projDesc}<\/p>\n\
+                    <p><a class='btn btn-secondary' href='\/${userName}\/${projName}\/' role='button'>Access \&raquo;<\/a><\/p>\n\
+                <\/div>\n/" ${launchHTML}
+}
+
+
+########
+# Code #
+########
+
+##Ensure we're connected to lustre.
+#while [ ! "$(ls -A /nfs)" ] || [ ! "$(ls -A /lustre)" ] || [ ! "$(ls -A /warehouse)" ]
+#do
+#  echo "Farm filesystem not connected.  Attempting to reconnect"
+#  mount-farm
+#done
+
+
+
+
+#Store the top level directory to return to
+topDir=`pwd`
+#Main loop
+while :
+do
+
+  cd $topDir
+  clear
+  echo "########################"
+  echo "#Sanger project manager#"
+  echo "########################"
+  echo
+  #Get the images that exist.  Those that start with project_ are ours
+  images=`docker image ls -a|cut -f 1 -d ' '|tail -n +2|grep '^project_'|sed 's/^project_//g'`
+  ###############
+  # Project info
+  #Counter to determine which port
+  portArray=''
+  #Check if container exists
+  echo "Existing projects:"
+  nProjects=0
+  for image in $images
+  do
+    (( nProjects++ ))
+    cont=`docker ps --format="container:{{.ID}} image:{{.Image}} name:{{.Names}}"|grep image:project_$image`
+    port=`docker inspect project_$image|grep 'HostPort'|head -n 1| sed 's/.*:[^0-9]*\([0-9]*\)[^0-9]*/\1/g'`
+    portArray="$portArray $port"
+    if [ -z "$cont" ]
+    then
+      echo "    project $image is mapped to port $port and is **not** running."
+    else
+      echo "    project $image is mapped to port $port and is running."
+    fi
+  done
+  #Get the next available port
+  portNum=81
+  while :
+  do
+    noConflict=true
+    for port in $portArray
+    do
+      noConflict=false
+      if [ "$port" = "$portNum" ]
+      then
+        break
+      fi
+      noConflict=true
+    done
+    if [ "$noConflict" = true ]
+    then
+      break
+    else
+      (( portNum++ ))
+    fi
+  done
+
+  ############
+  # Main Menu
+  echo 
+  echo "#############"
+  echo "# Main menu #"
+  echo "#############"
+  echo 
+  PS3="Select operation: "
+  #Don't offer manage projects if there's nothing to manage
+  if [ -z "$images" ]
+  then
+    options=("Start new project" "Import project" "Quit")
+  else
+    options=("Manage existing project" "Start new project" "Import project" "Quit")
+  fi
+  select opt in "${options[@]}"
+  do
+    case $opt in
+      "Manage existing project")
+        if [ -z $images ]
+        then
+          echo "No existing projects found."
+        else
+          task=Manage
+          break
+        fi
+        ;;
+      "Start new project")
+        task=New
+        break
+        ;;
+      "Import project")
+        task=Import
+        break
+        ;;
+      "Quit")
+        exit 1
+        ;;
+      *) echo "Invalid option $REPLY";;
+    esac
+  done
+  clear
+
+  ##########################
+  # Manage existing project
+  if [ "$task" = "Manage" ]
+  then
+    # Chose which project to manage
+    if [ "$nProjects" -gt "1" ]
+    then
+      echo "############################"
+      echo "# Select project to manage #"
+      echo "############################"
+      echo 
+      PS3="Select project: "
+      select projName in $images
+      do
+        #Validate choice
+        if [ ! -z $projName ]
+        then
+          break
+        fi
+        echo "Invalid selection $REPLY"
+      done
+    else
+      projName=$images
+    fi
+    echo "Project $projName selected."
+    clear
+    lab="# Manage project $projName #"
+    tmp=`eval printf '\#%.0s' {1..${#lab}}`
+    echo 
+    echo $tmp
+    echo $lab
+    echo $tmp
+    echo 
+    #Get project running status
+    cont=`docker ps --format="container:{{.ID}} image:{{.Image}} name:{{.Names}}"|grep image:project_$projName`
+    if [ -z "$cont" ]
+    then
+      imStatus="**not** running"
+    else
+      imStatus="running"
+    fi
+    #And port
+    port=`docker inspect project_$projName|grep 'HostPort'|head -n 1| sed 's/.*:[^0-9]*\([0-9]*\)[^0-9]*/\1/g'`
+    #Project menu
+    PS3="Select operation to perform on project $projName (mapped to port $port and currently $imStatus): "
+    options2=("Attach" "Restart" "Start" "Stop" "Export" "Delete" "Back")
+    select opt in "${options2[@]}"
+    do
+      case $opt in
+	"Attach")
+	  echo "Attaching to command line of project $projName"
+	  docker container exec -it --user jovyan project_$projName tmux new-session -A -s main
+	  break
+	  ;;
+        "Restart")
+          echo "This will restart the project $projName"
+          read -p "Are you sure you wish to proceed [Y/n]? " -n 1 -r
+          echo    # (optional) move to a new line
+          if [[ ! $REPLY =~ ^[Yy]$ ]]
+          then
+            continue
+          fi
+          docker container restart project_$projName
+          echo "Project $projName restarted"
+          read -n 1 -p "Press any key to continue..."
+          break
+          ;;
+        "Start")
+          echo "This will start the project $projName"
+          read -p "Are you sure you wish to proceed [Y/n]? " -n 1 -r
+          echo    # (optional) move to a new line
+          if [[ ! $REPLY =~ ^[Yy]$ ]]
+          then
+            continue
+          fi
+          docker container start project_$projName
+          echo "Project $projName started"
+          read -n 1 -p "Press any key to continue..."
+          break
+          ;;
+        "Stop")
+          echo "This will stop the project $projName"
+          read -p "Are you sure you wish to proceed [Y/n]? " -n 1 -r
+          echo    # (optional) move to a new line
+          if [[ ! $REPLY =~ ^[Yy]$ ]]
+          then
+            continue
+          fi
+          docker container stop project_$projName
+          echo "Project $projName stopped"
+          read -n 1 -p "Press any key to continue..."
+          break
+          ;;
+        "Export")
+          echo "Project $projName will be exported to file."
+          echo "NOTE: Output will be gzipped.  This process can take a long time (many hours)."
+          read -p "Specify file to save to [default ${projName}.tar.gz]: " tgtFile
+          if [ -z "$tgtFile" ]
+          then
+            tgtFile=${projName}.tar.gz
+          fi
+          echo "This will save the project $projName to the file ${tgtFile}"
+          read -p "Are you sure you wish to proceed [Y/n]? " -n 1 -r
+          echo    # (optional) move to a new line
+          if [[ ! $REPLY =~ ^[Yy]$ ]]
+          then
+            continue
+          fi
+          echo "Export in progress.  Be very patient..."
+          docker save project_$projName | gzip -9 > ${tgtFile}
+          echo "Export complete."
+          read -n 1 -p "Press any key to continue..."
+          break
+          ;;
+        "Delete")
+          echo "Project $projName will be **DELETED FOREVER**!"
+          read -p "Are you sure you wish to proceed [Y/n]? " -n 1 -r
+          echo    # (optional) move to a new line
+          if [[ ! $REPLY =~ ^[Yy]$ ]]
+          then
+            continue
+          fi
+          read -p "Really? This cannot be undone... [Y/n] " -n 1 -r
+          echo    # (optional) move to a new line
+          if [[ ! $REPLY =~ ^[Yy]$ ]]
+          then
+            continue
+          fi
+          #Delete docker container 
+          echo "Very well.  You were warned.  Deleting project $projName"
+          docker container stop project_$projName
+          docker container rm project_$projName
+          docker image rm project_$projName
+          #Delete nginx entry
+          sudo sed -i -e "/location \/${userName}\/${projName}\/ {/,+7d" ${nginxFile}
+          sudo nginx -s reload
+          #And the provisioning files
+          rm -rf ${provisionDir}/${projName}
+          #And the description in the html
+          sudo sed -i -e "/<div class='col-md-4 ${projName}'>/,+4d" ${launchHTML}
+          echo "Deleted $projName"
+          read -n 1 -p "Press any key to continue..."
+          break
+          ;;
+        "Back")
+          continue 2
+          ;;
+        *) echo "Invalid option $REPLY";;
+      esac
+    done
+  fi
+
+  #####################
+  # Create new project
+  if [ "$task" = "New" ]
+  then
+    clear
+    echo "######################"
+    echo "# Create new project #"
+    echo "######################"
+    echo 
+    read -p "Enter new project name: " projName
+    echo
+    #Convert to lower case
+    projName=`echo "$projName" | awk '{print tolower($0)}'`
+    #Check it's a valid choice
+    for image in $images default
+    do
+      if [ "$projName" = "$image" ]
+      then
+        echo "Project $projName exists or is invalid."
+        read -n 1 -p "Press any key to continue..."
+        continue 2
+      fi
+    done
+    #Check if we really want to create a new project.
+    read -p "A new project named $projName will be created.  Do you wish to proceed [Y/n]?" -n 1 -r
+    echo    # (optional) move to a new line
+    if [[ ! $REPLY =~ ^[Yy]$ ]]
+    then
+        continue
+    fi
+    #Create project
+    mkdir -p ${provisionDir}/${projName}/files
+    cd ${provisionDir}/${projName}/
+    cp -a $jupyterInit files/
+    #Specify Dockerfile
+    read -p "Specify Dockerfile [default:${baseDock}]: " dockPath
+    if [ -z "$dockPath" ]
+    then
+      dockPath=${baseDock}
+    fi
+    cp $dockPath .
+    #Input password
+    while :
+    do
+      read -s -p "Set JupyterHub password.  I'm trusting you to not set it to 12345... " rawPass
+      echo 
+      tst=`echo "$rawPass" | cracklib-check |sed 's/.*: //g'`
+      if [ ! "$tst" = "OK" ]
+      then
+        echo "Password $tst.  Enter a better password."
+        continue
+      fi
+      read -s -p "Confirm JupyterHub password: " rawPass2
+      echo 
+      if [ "$rawPass" = "$rawPass2" ]
+      then
+        break
+      fi
+      echo "Passwords don't match!"
+    done
+    hashPass=`python -c "from IPython.lib.security import passwd; print(passwd(passphrase='$rawPass', algorithm='sha1'))"`
+    #And propogate this into the config file
+    sed -i "/^c.NotebookApp.password/s/=.*/= '${hashPass}'/" files/initJupyter/.jupyter/jupyter_notebook_config.py
+    sed -i "/^#c.NotebookApp.base_url/s/.*/c.NotebookApp.base_url = '\/$userName\/$projName'/" files/initJupyter/.jupyter/jupyter_notebook_config.py
+    IMAGE_NAME=project_$projName
+    docker build --tag ${IMAGE_NAME} .
+    #Now start the container
+    startProj $projName $portNum 
+    #Enter description for the project
+    addProjDesc $projName
+    echo 
+    echo "Created new project $projName  Connect at /$userName/$projName"
+    read -n 1 -p "Press any key to continue..."
+  fi
+
+  ##########################
+  # Import existing project
+  if [ "$task" = "Import" ]
+  then
+    clear
+    echo "###########################"
+    echo "# Import existing project #"
+    echo "###########################"
+    echo 
+    read -p "Specify file containing project to load: " tgtFile
+    echo 
+    #Check if this file exists
+    if [ ! -f "$tgtFile" ]
+    then
+      read -n 1 -p "File ${tgtFile} does not exist."
+      continue
+    fi
+    echo "Inspecting file ${tgtFile} for valid project..."
+    #Extract the project name from the file
+    projName=`tar -axf ${tgtFile} repositories -O | sed -n 's/^{"project_\([^:]*\)":.*$/\1/p'`
+    if [ -z "$projName" ]
+    then
+      echo "File $tgtFile does not appear to contain an exported project."
+      read -n 1 -p "Press any key to continue..."
+      continue
+    fi
+    echo "File contains project ${projName}"
+    #Check this doesn't confict with an existing one
+    for image in $images default
+    do
+      if [ "$projName" = "$image" ]
+      then
+        echo "Project $projName already exists.  Please delete this project before importing."
+        read -n 1 -p "Press any key to continue..."
+        continue 2
+      fi
+    done
+    #Check if we really want to create a new project.
+    read -p "A new project named $projName will be imported.  Do you wish to proceed [Y/n]?" -n 1 -r
+    echo    # (optional) move to a new line
+    if [[ ! $REPLY =~ ^[Yy]$ ]]
+    then
+      continue
+    fi
+    docker load -i "$tgtFile"
+    #Now do the importing and rename (as per this magic https://stackoverflow.com/questions/54563510/bash-get-docker-image-id-automatically)
+    #docker load -i "$tgtFile"|sed -n 's/^Loaded image: \(.*\):.*$/\1/p'| xargs -i docker tag {} project_$projName
+    #Check that the image was created and tagged
+    images=`docker image ls -a|cut -f 1 -d ' '|tail -n +2|grep '^project_'|sed 's/^project_//g'`
+    itWorked=false
+    for image in $images
+    do
+      if [ "$image" = "$projName" ]
+      then
+        itWorked=true
+        break
+      fi
+    done
+    if [ "$itWorked" = false ]
+    then
+      read -n 1 -p "Something went wrong importing.  Press any key to continue..."
+      continue
+    fi
+    #Create project directory, even though it be empty
+    mkdir -p ${provisionDir}/${projName}/
+    #Start a container based on the improted image
+    startProj $projName $portNum
+    #Add project description to the html index
+    addProjDesc $projName 
+    echo 
+    echo "Imported project $projName connect using port $portNum"
+    read -n 1 -p "Press any key to continue..."
+  fi
+done
+
+

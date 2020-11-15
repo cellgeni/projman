@@ -1,0 +1,1 @@
+ssh  -i keys/projman_key ubuntu@$(terraform output | awk -F' = ' '{print $2}')
