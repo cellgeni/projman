@@ -111,10 +111,15 @@ RUN Rscript -e 'devtools::install_github("jalvesaq/colorout")'
 # clean conda cache
 RUN  mamba clean --index-cache --tarballs --yes
 
+# clean stuff
+RUN rm -rf /tmp/* && \
+    rm /home/jovyan/*
+
 # fix permissions
 RUN fix-permissions /opt/conda/share/jupyter/kernels/ && \
     fix-permissions /usr/lib/R/ && \
-    fix-permissions /usr/local/lib/R/site-library
+    fix-permissions /usr/local/lib/R/site-library && \
+    fix-permissions /home/jovyan/
 
 # give jovyan sudo permissions
 RUN sed -i -e "s/Defaults    requiretty.*/ #Defaults    requiretty/g" /etc/sudoers && \
