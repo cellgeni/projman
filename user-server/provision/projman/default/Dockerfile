@@ -23,6 +23,7 @@ RUN Rscript -e 'devtools::install_github("jalvesaq/colorout")'
 
 # Copy everything from the init folder into home directory
 COPY --chown=jovyan:users files/initJupyter/ /home/jovyan/
-#COPY files/.Rprofile /home/jovyan/
+#Make Rstudio stop it's timeout business
+RUN mv /home/jovyan/rsession.conf /etc/rstudio
 
 

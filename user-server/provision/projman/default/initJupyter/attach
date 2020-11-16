@@ -1,9 +1,0 @@
-#!/bin/bash
-#Attaches a tmux session inside the docker container identified
-#Check we have a parameter
-if [ "$1" == "" ]; then
-  echo "Container name not found.  Usage: attach <name_of_container>"
-  exit 1
-fi
-#Do the attaching
-docker container exec -it --user jovyan $1 tmux new-session -A -s main
