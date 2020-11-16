@@ -36,13 +36,16 @@ proxy_server_ip = <proxy_ip>
 
  Test connection with `./connect.sh` or `ssh ubuntu@<proxy_ip> -i keys/projman_key`
 
-### User server
+### Createa a user server
 
-Creatae new OpenStack instance and provision with necessary scripts:
+Creatae new OpenStack instance and provision with necessary scripts.
+
+From the checkout folder run:
 `./create_intance.sh <user>`
 
-After it finishes change to the newly created dir
-`cd <user>`
+_**Note**: Don't run the script directly from "user-server" folder, that's the template and should not be changed._
+
+After it finishes **change to the newly created dir**: `cd <user>`
 
 Verify output with `terraform output`
 ```
@@ -50,10 +53,10 @@ user_server_ip = <server_ip>
 user_server_name = <user>
 ```
 
-Check connection with the new machine `./connect.sh` or
+Check connection with the new machine `connect.sh` or
 `ssh ubuntu@<server_ip> -i keys/user_key`
 
-Pack keys and ssh instructions in a tar to share: `./share.sh`
+Pack keys and ssh instructions in a tar to share: `share.sh`
 
 #### Customizing user server
 
@@ -66,13 +69,14 @@ Edit `main.tf` file. The first section of the file has the varaibles that can be
 
 ### Add user server to proxy entries
 
+When `create_intance.sh` from the root folder is used, the user is added automatically to the proxy server. If you want to add it manuall, you can follow this steps: 
 1. `cd proxy-server`
 2. `./connect.sh`
 3. `./projman/add_user.sh <username> <server_ip>`
 
 ### Teardown
 
-To tear down the proxy or a user server, change directory to that folder and then run `terraform destry`.
+To tear down the proxy or a any created user server, change directory to that folder and then run `terraform destry`.
 
 ## porjMan
 
