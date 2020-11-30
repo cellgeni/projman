@@ -59,7 +59,7 @@ Pack keys and ssh instructions in a tar to share: `./share.sh`
 
 #### Customizing user server
 
-Edit `main.tf` file. The first section of the file has the varaibles that can be edited.
+Edit `.templates/user-server/main.tf` file. The first section of the file has the varaibles that can be edited.
 
 - `instance_name`: name for the instance, default is "<username>-projman"
 - `instance_image_name`: image name present in openstack, default it base "bionic-WTSI-docker_55329_884ace11
